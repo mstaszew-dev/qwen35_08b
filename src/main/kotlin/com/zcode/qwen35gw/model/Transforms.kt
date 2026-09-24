@@ -3,17 +3,20 @@ package com.zcode.qwen35gw.model
 import kotlinx.serialization.json.*
 
 object TokenEstimator {
+    private const val CHARS_PER_TOKEN = 4
+    private const val MESSAGE_OVERHEAD_CHARS = 10
+
     fun estimateTokens(messages: JsonArray, tools: JsonArray?): Int {
         var chars = 0
         for (m in messages) {
             val obj = m as? JsonObject ?: continue
             val content = obj["content"]
-            chars += contentTextLength(content) + 10
+            chars += contentTextLength(content) + MESSAGE_OVERHEAD_CHARS
         }
         if (tools != null) {
             chars += tools.toString().length
         }
-        return chars / 4
+        return chars / CHARS_PER_TOKEN
     }
 
     fun pruneToBudget(messages: JsonArray, tools: JsonArray?, budget: Int): JsonArray {
@@ -45,20 +48,26 @@ object TokenEstimator {
             else -> return JsonArray(kept)
         }
 
-        val nonLastChars = kept.filterIndexed { idx, _ -> idx != lastIndex }
+        val fixedChars = kept.filterIndexed { idx, _ -> idx != lastIndex }
             .sumOf { m ->
                 val obj = m as? JsonObject ?: return@sumOf 0
-                contentTextLength(obj["content"]) + 10
+                contentTextLength(obj["content"]) + MESSAGE_OVERHEAD_CHARS
             } + (tools?.toString()?.length ?: 0)
-        val charsCeiling = 4 * budget + 3
-        var maxLen = charsCeiling - nonLastChars - 10
-        if (maxLen < 0) maxLen = 0
-        val truncated = base.substring(0, maxLen.coerceAtMost(base.length))
+        val cutLength = lastContentCutLength(fixedChars, base.length, budget)
         kept[lastIndex] = buildJsonObject {
             for ((k, v) in last) put(k, v)
-            put("content", JsonPrimitive(truncated))
+            put("content", JsonPrimitive(base.substring(0, cutLength)))
         }
         return JsonArray(kept)
+    }
+
+    private fun maxCharsForTokenBudget(budget: Int): Int =
+        budget * CHARS_PER_TOKEN + (CHARS_PER_TOKEN - 1)
+
+    private fun lastContentCutLength(fixedChars: Int, baseLength: Int, budget: Int): Int {
+        val lastMessageAllowance = maxCharsForTokenBudget(budget) - fixedChars
+        val contentChars = (lastMessageAllowance - MESSAGE_OVERHEAD_CHARS).coerceAtLeast(0)
+        return contentChars.coerceAtMost(baseLength)
     }
 
     private fun contentTextLength(content: JsonElement?): Int {

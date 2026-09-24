@@ -123,6 +123,31 @@ class TransformsTest {
     }
 
     @Test
+    fun pruneTruncatesLastToExactBudgetBoundary() {
+        val messages = jsonArrayOf(systemMsg, message("user", JsonPrimitive("A".repeat(1000))))
+        val pruned = TokenEstimator.pruneToBudget(messages, null, 8)
+        val content = (pruned[1] as JsonObject)["content"].str()
+        assertEquals("A".repeat(12), content)
+        assertEquals(8, TokenEstimator.estimateTokens(pruned, null))
+    }
+
+    @Test
+    fun pruneTruncatesOneCharOverBudget() {
+        val messages = jsonArrayOf(systemMsg, message("user", JsonPrimitive("A".repeat(13))))
+        val pruned = TokenEstimator.pruneToBudget(messages, null, 8)
+        assertEquals("A".repeat(12), (pruned[1] as JsonObject)["content"].str())
+        assertEquals(8, TokenEstimator.estimateTokens(pruned, null))
+    }
+
+    @Test
+    fun pruneTerminatesTruncatingLastToEmpty() {
+        val messages = jsonArrayOf(systemMsg, message("user", JsonPrimitive("A".repeat(1000))))
+        val pruned = TokenEstimator.pruneToBudget(messages, null, 3)
+        assertEquals(2, pruned.size)
+        assertEquals("", (pruned[1] as JsonObject)["content"].str())
+    }
+
+    @Test
     fun stripVisionRemovesImagePart() {
         val content = jsonArrayOf(
             buildJsonObject { put("type", "text"); put("text", "describe it") },
