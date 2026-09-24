@@ -2,8 +2,11 @@ package com.zcode.qwen35gw.runtime
 
 import java.io.File
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 data class LlamaConfig(
@@ -34,18 +37,19 @@ interface ManagedProcessLauncher {
 enum class LlamaState { STOPPED, STARTING, RUNNING }
 
 object HttpHealthCheck {
+    private val client: HttpClient by lazy {
+        HttpClient.newBuilder().connectTimeout(Duration.ofMillis(1000)).build()
+    }
+
     fun isHealthy(host: String, port: Int): Boolean {
-        var connection: HttpURLConnection? = null
+        val request = HttpRequest.newBuilder(URI("http://$host:$port/health"))
+            .timeout(Duration.ofMillis(1000))
+            .GET()
+            .build()
         return try {
-            connection = URI("http://$host:$port/health").toURL().openConnection() as HttpURLConnection
-            connection.connectTimeout = 500
-            connection.readTimeout = 500
-            connection.requestMethod = "GET"
-            connection.responseCode == 200
+            client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode() == 200
         } catch (e: Exception) {
             false
-        } finally {
-            connection?.disconnect()
         }
     }
 }
