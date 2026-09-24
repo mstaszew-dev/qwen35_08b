@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
+import java.io.IOException
 
 class LlamaServerProcessTest {
 
@@ -54,10 +55,11 @@ class LlamaServerProcessTest {
         healthCheck: (String, Int) -> Boolean = { _, _ -> true },
         startupTimeoutMs: Long = 1_000,
         stopTimeoutMs: Long = 100,
+        logFile: String = File(tempDir, "llama.log").path,
     ): LlamaConfig = LlamaConfig(
         binPath = binPath,
         modelPath = modelPath,
-        logFile = File(tempDir, "llama.log").path,
+        logFile = logFile,
         startupTimeoutMs = startupTimeoutMs,
         stopTimeoutMs = stopTimeoutMs,
         healthCheck = healthCheck,
@@ -229,5 +231,83 @@ class LlamaServerProcessTest {
         assertEquals(LlamaState.RUNNING, proc.state())
         proc.stop()
         assertEquals(LlamaState.STOPPED, proc.state())
+    }
+
+    @Test
+    fun launcherThrowReturnsFalseAndLeavesNoProcess() {
+        val bin = existingFile("llama-server")
+        val model = existingFile("model.gguf")
+        val fake = FakeProcess()
+        val launcher = object : ManagedProcessLauncher {
+            override fun launch(cmd: List<String>, logFile: String): ManagedProcess {
+                throw IOException("launch failed")
+            }
+        }
+        val proc = LlamaServerProcess(
+            config(binPath = bin.path, modelPath = model.path, launcher = launcher),
+            pollIntervalMs = 1,
+        )
+        assertFalse(proc.start())
+        assertEquals(LlamaState.STOPPED, proc.state())
+        proc.stop()
+        assertEquals(0, fake.destroyCount)
+    }
+
+    @Test
+    fun startPrecreatesLogParentDirectory() {
+        val bin = existingFile("llama-server")
+        val model = existingFile("model.gguf")
+        val launcher = FakeLauncher()
+        val logFile = File(tempDir, "nested/logs/llama-server.log")
+        assertFalse(logFile.parentFile!!.exists())
+        val proc = LlamaServerProcess(
+            config(binPath = bin.path, modelPath = model.path, launcher = launcher, logFile = logFile.path),
+            pollIntervalMs = 1,
+        )
+        assertTrue(proc.start())
+        assertTrue(logFile.parentFile!!.exists())
+        assertEquals(LlamaState.RUNNING, proc.state())
+    }
+
+    @Test
+    fun startTimeoutDestroysAndForceKills() {
+        val bin = existingFile("llama-server")
+        val model = existingFile("model.gguf")
+        val launcher = FakeLauncher()
+        launcher.fakeProcess.dieAfterDestroyCount = Int.MAX_VALUE
+        val proc = LlamaServerProcess(
+            config(
+                binPath = bin.path,
+                modelPath = model.path,
+                launcher = launcher,
+                healthCheck = { _, _ -> false },
+                startupTimeoutMs = 50,
+            ),
+            pollIntervalMs = 5,
+        )
+        assertFalse(proc.start())
+        assertEquals(2, launcher.fakeProcess.destroyCount)
+        assertEquals(listOf(100L, 100L), launcher.fakeProcess.waitForCalls)
+        assertEquals(LlamaState.STOPPED, proc.state())
+    }
+
+    @Test
+    fun healthCheckThrowRollsIntoPolling() {
+        val bin = existingFile("llama-server")
+        val model = existingFile("model.gguf")
+        val launcher = FakeLauncher()
+        var calls = 0
+        val proc = LlamaServerProcess(
+            config(
+                binPath = bin.path,
+                modelPath = model.path,
+                launcher = launcher,
+                healthCheck = { _, _ -> calls++; if (calls == 1) throw IOException("transient") else true },
+            ),
+            pollIntervalMs = 1,
+        )
+        assertTrue(proc.start())
+        assertEquals(LlamaState.RUNNING, proc.state())
+        assertTrue(calls >= 2)
     }
 }

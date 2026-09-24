@@ -1,6 +1,7 @@
 package com.zcode.qwen35gw.runtime
 
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -59,6 +60,7 @@ object ProcessLauncherImpl : ManagedProcessLauncher {
 }
 
 private class JavaManagedProcess(private val process: Process) : ManagedProcess {
+    @Volatile
     private var gracefulSignaled = false
 
     override fun isAlive(): Boolean = process.isAlive
@@ -95,12 +97,23 @@ class LlamaServerProcess(
                 currentState = LlamaState.STOPPED
                 return false
             }
+            File(cfg.logFile).parentFile?.mkdirs()
             currentState = LlamaState.STARTING
-            val process = cfg.launcher.launch(command(), cfg.logFile)
+            val process = try {
+                cfg.launcher.launch(command(), cfg.logFile)
+            } catch (e: IOException) {
+                currentState = LlamaState.STOPPED
+                return false
+            }
             currentProcess = process
             val deadline = System.nanoTime() + cfg.startupTimeoutMs * 1_000_000L
             while (System.nanoTime() < deadline) {
-                if (cfg.healthCheck(cfg.host, cfg.port)) {
+                val healthy = try {
+                    cfg.healthCheck(cfg.host, cfg.port)
+                } catch (e: Exception) {
+                    false
+                }
+                if (healthy) {
                     currentState = LlamaState.RUNNING
                     return true
                 }
@@ -108,7 +121,7 @@ class LlamaServerProcess(
                 if (remainingMs <= 0L) break
                 Thread.sleep(minOf(pollIntervalMs, remainingMs))
             }
-            process.destroy()
+            terminate(process)
             currentProcess = null
             currentState = LlamaState.STOPPED
             return false
@@ -119,14 +132,18 @@ class LlamaServerProcess(
         synchronized(lock) {
             val process = currentProcess
             if (process != null) {
-                process.destroy()
-                if (!process.waitFor(cfg.stopTimeoutMs) && process.isAlive()) {
-                    process.destroy()
-                    process.waitFor(cfg.stopTimeoutMs)
-                }
+                terminate(process)
                 currentProcess = null
             }
             currentState = LlamaState.STOPPED
+        }
+    }
+
+    private fun terminate(process: ManagedProcess) {
+        process.destroy()
+        if (!process.waitFor(cfg.stopTimeoutMs) && process.isAlive()) {
+            process.destroy()
+            process.waitFor(cfg.stopTimeoutMs)
         }
     }
 
