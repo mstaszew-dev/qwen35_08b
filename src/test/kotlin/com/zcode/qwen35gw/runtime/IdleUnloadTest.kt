@@ -281,9 +281,10 @@ class IdleUnloadTest {
         clock.now = 1_000L
         val tracker = RequestTracker(clock)
         assertEquals(0, tracker.active())
-        assertEquals(0L, tracker.idleMillis(1_000L))
+        assertEquals(Long.MAX_VALUE, tracker.idleMillis(1_000L))
         tracker.begin()
         assertEquals(1, tracker.active())
+        assertEquals(1_500L, tracker.idleMillis(2_500L))
         clock.now = 2_000L
         tracker.begin()
         assertEquals(2, tracker.active())
@@ -294,6 +295,27 @@ class IdleUnloadTest {
         assertEquals(0, tracker.active())
         tracker.end()
         assertEquals(0, tracker.active())
+    }
+
+    @Test
+    fun neverBeganIdleIsInfinite() {
+        clock.now = 42L
+        val tracker = RequestTracker(clock)
+        assertEquals(Long.MAX_VALUE, tracker.idleMillis(clock.nowMillis()))
+        tracker.begin()
+        assertEquals(0L, tracker.idleMillis(clock.nowMillis()))
+    }
+
+    @Test
+    fun runningNeverBeganProcessUnloadsOnFirstTick() {
+        val launcher = FakeLauncher()
+        val proc = startRunningProcess(launcher)
+        val tracker = RequestTracker(clock)
+        val scheduler = schedulerFor(proc, tracker, 60_000L)
+        assertEquals(0, tracker.active())
+        scheduler.evaluate(clock.nowMillis())
+        assertEquals(LlamaState.STOPPED, proc.state())
+        assertEquals(1, launcher.fakeProcess.destroyCount)
     }
 
     @Test

@@ -4,7 +4,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 interface Clock {
     fun nowMillis(): Long
@@ -12,7 +12,7 @@ interface Clock {
 
 class RequestTracker(private val clock: Clock) {
     private val activeCount = AtomicInteger(0)
-    private val lastRequestAt = AtomicLong(clock.nowMillis())
+    private val lastRequestAt = AtomicReference<Long?>(null)
 
     fun begin() {
         activeCount.incrementAndGet()
@@ -25,7 +25,8 @@ class RequestTracker(private val clock: Clock) {
 
     fun active(): Int = activeCount.get()
 
-    fun idleMillis(now: Long): Long = now - lastRequestAt.get()
+    fun idleMillis(now: Long): Long =
+        lastRequestAt.get()?.let { now - it } ?: Long.MAX_VALUE
 }
 
 class IdleUnloadScheduler(
