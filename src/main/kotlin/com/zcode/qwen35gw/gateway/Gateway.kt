@@ -15,12 +15,14 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -48,21 +50,25 @@ sealed class UpstreamResult {
 
 class HttpUpstream(
     private val baseUrl: String,
-    private val ready: (String) -> Unit = {},
+    private val connectTimeout: Duration = Duration.ofSeconds(10),
+    private val relayTimeout: Duration = Duration.ofMinutes(5),
 ) : Upstream {
-    private val client: HttpClient = HttpClient.newBuilder().build()
+    private val client: HttpClient = HttpClient.newBuilder()
+        .connectTimeout(connectTimeout)
+        .build()
 
     override fun chatCompletions(body: String): UpstreamResult {
         return try {
+            val deadlineNanos = System.nanoTime() + relayTimeout.toNanos()
             val response = client.send(
                 HttpRequest.newBuilder(URI(baseUrl + "/v1/chat/completions"))
                     .header("Content-Type", "application/json")
+                    .timeout(relayTimeout)
                     .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
                     .build(),
                 HttpResponse.BodyHandlers.ofInputStream(),
             )
-            val raw = response.body().use(::readFully)
-            bodyModel(body)?.let(ready)
+            val raw = DeadlineInputStream(response.body(), deadlineNanos).use(::readFully)
             UpstreamResult.Success(
                 status = response.statusCode(),
                 contentType = response.headers().firstValue("Content-Type").orElse(null),
@@ -70,14 +76,6 @@ class HttpUpstream(
             )
         } catch (e: Exception) {
             UpstreamResult.Failure(e.message ?: e.javaClass.simpleName)
-        }
-    }
-
-    private fun bodyModel(body: String): String? {
-        return try {
-            (Json.parseToJsonElement(body).jsonObject["model"] as? JsonPrimitive)?.content
-        } catch (e: Exception) {
-            null
         }
     }
 
@@ -91,6 +89,34 @@ class HttpUpstream(
         }
         return output.toByteArray()
     }
+
+    private class DeadlineInputStream(
+        private val delegate: InputStream,
+        private val deadlineNanos: Long,
+    ) : InputStream() {
+        private fun checkDeadline() {
+            if (Thread.currentThread().isInterrupted) {
+                throw IOException("upstream relay interrupted")
+            }
+            if (System.nanoTime() > deadlineNanos) {
+                throw IOException("upstream relay timed out")
+            }
+        }
+
+        override fun read(): Int {
+            checkDeadline()
+            return delegate.read()
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            checkDeadline()
+            return delegate.read(b, off, len)
+        }
+
+        override fun close() {
+            delegate.close()
+        }
+    }
 }
 
 class Gateway(
@@ -102,9 +128,14 @@ class Gateway(
     private var server: HttpServer? = null
     private var executor: ExecutorService? = null
 
+    companion object {
+        private const val MAX_HANDLER_THREADS = 8
+        private const val MAX_BODY_BYTES = 1 shl 20
+    }
+
     fun start() {
         val created = HttpServer.create(InetSocketAddress("127.0.0.1", cfg.listenPort), 0)
-        executor = Executors.newCachedThreadPool { r -> Thread(r).apply { isDaemon = false } }
+        executor = Executors.newFixedThreadPool(MAX_HANDLER_THREADS) { r -> Thread(r).apply { isDaemon = false } }
         created.executor = executor
         created.createContext("/v1/chat/completions") { exchange -> handleChat(exchange) }
         created.createContext("/v1/models") { exchange ->
@@ -119,7 +150,7 @@ class Gateway(
 
     fun stop() {
         server?.stop(0)
-        executor?.shutdown()
+        executor?.shutdownNow()
     }
 
     private fun handleChat(exchange: HttpExchange) {
@@ -127,17 +158,22 @@ class Gateway(
             send(exchange, 405, null, ByteArray(0))
             return
         }
+        val body = readBounded(exchange.requestBody, MAX_BODY_BYTES)
+        if (body == null) {
+            send(exchange, 413, "application/json", errorBody("request too large", "payload_too_large"))
+            return
+        }
         val request: JsonObject
         try {
-            request = Json.parseToJsonElement(String(exchange.requestBody.readAllBytes())).jsonObject
+            request = Json.parseToJsonElement(String(body)).jsonObject
         } catch (e: Exception) {
             send(exchange, 400, "application/json", errorBody("invalid request body", "bad_request"))
             return
         }
-        val prepared = RequestTransform.prepare(request, cfg.modelId, cfg.pruneBudget)
         tracker.begin()
         var notLoaded = false
         try {
+            val prepared = RequestTransform.prepare(request, cfg.modelId, cfg.pruneBudget)
             if (process.state() != LlamaState.RUNNING && !process.start()) {
                 notLoaded = true
             } else {
@@ -155,9 +191,32 @@ class Gateway(
         }
     }
 
+    private fun readBounded(input: InputStream, max: Int): ByteArray? {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) break
+            if (output.size() + read > max) return null
+            output.write(buffer, 0, read)
+        }
+        return output.toByteArray()
+    }
+
     private fun relay(exchange: HttpExchange, prepared: JsonObject) {
         when (val result = upstream.chatCompletions(Json.encodeToString(prepared))) {
-            is UpstreamResult.Success -> send(exchange, result.status, result.contentType, result.bodyBytes)
+            is UpstreamResult.Success ->
+                if (result.status in 500..599) {
+                    send(
+                        exchange,
+                        502,
+                        "application/json",
+                        errorBody("upstream error (${result.status})", "upstream_error"),
+                    )
+                } else {
+                    send(exchange, result.status, result.contentType, result.bodyBytes)
+                }
+
             is UpstreamResult.Failure -> send(
                 exchange,
                 502,

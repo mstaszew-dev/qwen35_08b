@@ -32,14 +32,14 @@ object ConfigEnv {
         val modelPath = expandTilde(env["MODEL_PATH"] ?: DEFAULT_MODEL_PATH, home)
         val binPath = expandTilde(env["LLAMA_SERVER_PATH"] ?: DEFAULT_LLAMA_SERVER_PATH, home)
         val logDir = expandTilde(env["LOG_DIR"] ?: DEFAULT_LOG_DIR, home)
-        val idleMinutes = env["IDLE_MINUTES"]?.toLong() ?: DEFAULT_IDLE_MINUTES.toLong()
+        val idleMinutes = (env["IDLE_MINUTES"]?.toLong() ?: DEFAULT_IDLE_MINUTES.toLong()).coerceAtLeast(1L)
         return AppConfig(
             gateway = GatewayConfig(
                 listenPort = env["PORT"]?.toInt() ?: DEFAULT_PORT,
                 upstreamHost = env["UPSTREAM_HOST"] ?: DEFAULT_UPSTREAM_HOST,
                 upstreamPort = upstreamPort,
                 modelId = modelId,
-                pruneBudget = env["PRUNE_BUDGET"]?.toInt() ?: DEFAULT_PRUNE_BUDGET,
+                pruneBudget = (env["PRUNE_BUDGET"]?.toInt() ?: DEFAULT_PRUNE_BUDGET).coerceAtLeast(1),
             ),
             llama = LlamaConfig(
                 binPath = binPath,

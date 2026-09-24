@@ -75,4 +75,15 @@ class ConfigTest {
             ConfigEnv.fromEnv(mapOf("PORT" to "not-a-port"))
         }
     }
+
+    @Test
+    fun zeroOrNegativeIdleAndPruneCoerceToMinimum() {
+        val zeroed = ConfigEnv.fromEnv(mapOf("IDLE_MINUTES" to "0", "PRUNE_BUDGET" to "0"))
+        assertEquals(60_000L, zeroed.idleMs)
+        assertEquals(1, zeroed.gateway.pruneBudget)
+
+        val negative = ConfigEnv.fromEnv(mapOf("IDLE_MINUTES" to "-5", "PRUNE_BUDGET" to "-3"))
+        assertEquals(60_000L, negative.idleMs)
+        assertEquals(1, negative.gateway.pruneBudget)
+    }
 }

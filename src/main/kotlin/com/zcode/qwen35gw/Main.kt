@@ -23,9 +23,9 @@ fun main() {
         tracker,
     )
     Runtime.getRuntime().addShutdownHook(Thread {
-        gateway.stop()
         scheduler.stop()
         process.stop()
+        gateway.stop()
     })
     gateway.start()
     println("qwen35-gw listening on 127.0.0.1:${app.gateway.listenPort} (model ${app.gateway.modelId})")

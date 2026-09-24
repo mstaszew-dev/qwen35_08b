@@ -27,7 +27,10 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.time.Duration
 
 private fun freePort(): Int = ServerSocket(0).use { it.localPort }
 
@@ -423,6 +426,104 @@ class GatewayTest {
             val response = get("http://127.0.0.1:${cfg.listenPort}", "/no-such-route")
             assertEquals(404, response.statusCode())
         } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
+    fun upstream5xxMapsTo502WithErrorEnvelope() {
+        val stub = StubServer()
+        stub.chatHandler = { _ ->
+            StubResponse(500, "application/json", """{"error":"boom"}""".toByteArray())
+        }
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        stub.healthy = true
+        assertTrue(process.start())
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val gw = gateway(cfg, stub, process, tracker)
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val response = postJson(
+                base,
+                "/v1/chat/completions",
+                """{"messages":[{"role":"user","content":"hi"}]}""",
+            )
+            assertEquals(502, response.statusCode())
+            val json = Json.parseToJsonElement(response.body()).jsonObject
+            val error = json["error"]!!.jsonObject
+            assertEquals("upstream_error", (error["type"] as JsonPrimitive).content)
+            assertTrue((error["message"] as JsonPrimitive).content.contains("upstream error"))
+            awaitActiveZero(tracker)
+        } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
+    fun oversizedRequestBodyReturns413() {
+        val stub = StubServer()
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val gw = gateway(cfg, stub, process, tracker)
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val big = """{"messages":[{"role":"user","content":"${"A".repeat(1_400_000)}"}]}"""
+            val response = postJson(base, "/v1/chat/completions", big)
+            assertEquals(413, response.statusCode())
+            assertTrue(response.body().contains("payload_too_large"))
+            assertEquals(0, tracker.active())
+            assertTrue(stub.received.none { it.first == "/v1/chat/completions" })
+        } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
+    fun hungUpstreamTimesOutTo502AndEndsTracker() {
+        val stub = StubServer()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        stub.chatHandler = { _ ->
+            entered.countDown()
+            release.await(30, TimeUnit.SECONDS)
+            StubResponse(200, "application/json", """{}""".toByteArray())
+        }
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        stub.healthy = true
+        assertTrue(process.start())
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val gw = Gateway(
+            cfg,
+            HttpUpstream(
+                "http://127.0.0.1:${stub.port}",
+                connectTimeout = Duration.ofMillis(200),
+                relayTimeout = Duration.ofMillis(200),
+            ),
+            process,
+            tracker,
+        )
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val response = postJson(
+                base,
+                "/v1/chat/completions",
+                """{"messages":[{"role":"user","content":"hi"}]}""",
+            )
+            assertEquals(502, response.statusCode())
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            release.countDown()
+            awaitActiveZero(tracker)
+        } finally {
+            release.countDown()
             gw.stop()
             stub.close()
         }
