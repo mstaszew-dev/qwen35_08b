@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.zcode.qwen35-gw</string>
+    <key>ProgramArguments</key>
+    <array><string>/Users/mst/qwen35_08b/qwen35-gw</string></array>
+    <key>WorkingDirectory</key><string>/Users/mst/qwen35_08b</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PORT</key><string>8091</string>
+        <key>UPSTREAM_PORT</key><string>8101</string>
+        <key>MODEL_ID</key><string>qwen3.5-0.8b</string>
+        <key>MODEL_PATH</key><string>/Users/mst/qwen35_08b/Qwen3.5-0.8B-Q4_K_M.gguf</string>
+        <key>LLAMA_SERVER_PATH</key><string>/Users/mst/qwen35_08b/bin/llama-server</string>
+        <key>IDLE_MINUTES</key><string>10</string>
+        <key>PRUNE_BUDGET</key><string>30000</string>
+        <key>LOG_DIR</key><string>/Users/mst/qwen35_08b/logs</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/Users/mst/qwen35_08b/logs/gateway.out.log</string>
+    <key>StandardErrorPath</key><string>/Users/mst/qwen35_08b/logs/gateway.err.log</string>
+</dict>
+</plist>
