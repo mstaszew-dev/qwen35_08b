@@ -1,0 +1,1 @@
+rootProject.name = "qwen35_08b"
