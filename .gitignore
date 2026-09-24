@@ -1,0 +1,14 @@
+# Model files are large and unpushable (>100 MB GitHub cap). Fetch via scripts/download-model.sh.
+*.gguf
+
+# Build artifacts
+build/
+.gradle/
+.native/
+*.log
+
+# Runtime logs
+logs/
+
+# macOS
+.DS_Store
