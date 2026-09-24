@@ -331,6 +331,87 @@ class GatewayTest {
     }
 
     @Test
+    fun malformedJsonBodyReturns400AndLeavesTrackerClean() {
+        val stub = StubServer()
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val gw = gateway(cfg, stub, process, tracker)
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val response = postJson(base, "/v1/chat/completions", "this is not json")
+            assertEquals(400, response.statusCode())
+            assertTrue(response.headers().firstValue("Content-Type").orElse("").contains("application/json"))
+            assertTrue(response.body().contains("invalid request body"))
+            assertEquals(0, tracker.active())
+        } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
+    fun upstreamFailureReturns502AndEndsTracker() {
+        val stub = StubServer()
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        stub.healthy = true
+        assertTrue(process.start())
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val failingUpstream = object : Upstream {
+            override fun chatCompletions(body: String): UpstreamResult =
+                UpstreamResult.Failure("upstream boom")
+        }
+        val gw = Gateway(cfg, failingUpstream, process, tracker)
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val response = postJson(
+                base,
+                "/v1/chat/completions",
+                """{"messages":[{"role":"user","content":"hi"}]}""",
+            )
+            assertEquals(502, response.statusCode())
+            val json = Json.parseToJsonElement(response.body()).jsonObject
+            val error = json["error"]!!.jsonObject
+            assertEquals("upstream boom", (error["message"] as JsonPrimitive).content)
+            assertEquals("upstream_error", (error["type"] as JsonPrimitive).content)
+            awaitActiveZero(tracker)
+        } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
+    fun firstRequestAutoStartsProcessWhenHealthy() {
+        val stub = StubServer()
+        stub.healthy = true
+        val tracker = RequestTracker(FixedClock())
+        val process = processAgainst(stub)
+        val cfg = GatewayConfig(listenPort = freePort(), upstreamPort = stub.port)
+        val gw = gateway(cfg, stub, process, tracker)
+        val base = "http://127.0.0.1:${cfg.listenPort}"
+        gw.start()
+        try {
+            val response = postJson(
+                base,
+                "/v1/chat/completions",
+                """{"messages":[{"role":"user","content":"hi"}]}""",
+            )
+            assertEquals(200, response.statusCode())
+            assertEquals(LlamaState.RUNNING, process.state())
+            val health = get(base, "/healthz")
+            assertTrue(health.body().contains("\"loaded\":true"))
+            awaitActiveZero(tracker)
+        } finally {
+            gw.stop()
+            stub.close()
+        }
+    }
+
+    @Test
     fun unknownRouteReturns404() {
         val stub = StubServer()
         val tracker = RequestTracker(FixedClock())

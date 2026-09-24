@@ -6,6 +6,7 @@ import com.zcode.qwen35gw.model.RequestTransform
 import com.zcode.qwen35gw.runtime.LlamaServerProcess
 import com.zcode.qwen35gw.runtime.LlamaState
 import com.zcode.qwen35gw.runtime.RequestTracker
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -135,20 +136,27 @@ class Gateway(
         }
         val prepared = RequestTransform.prepare(request, cfg.modelId, cfg.pruneBudget)
         tracker.begin()
-        if (process.state() != LlamaState.RUNNING && !process.start()) {
-            tracker.end()
-            send(exchange, 503, "application/json", errorBody("model not loaded", "service_unavailable"))
-            return
-        }
+        var notLoaded = false
         try {
-            relay(exchange, prepared)
+            if (process.state() != LlamaState.RUNNING && !process.start()) {
+                notLoaded = true
+            } else {
+                relay(exchange, prepared)
+            }
+        } catch (e: Exception) {
+            runCatching {
+                send(exchange, 500, "application/json", errorBody("internal error", "internal_error"))
+            }
         } finally {
             tracker.end()
+        }
+        if (notLoaded) {
+            send(exchange, 503, "application/json", errorBody("model not loaded", "service_unavailable"))
         }
     }
 
     private fun relay(exchange: HttpExchange, prepared: JsonObject) {
-        when (val result = upstream.chatCompletions(prepared.toString())) {
+        when (val result = upstream.chatCompletions(Json.encodeToString(prepared))) {
             is UpstreamResult.Success -> send(exchange, result.status, result.contentType, result.bodyBytes)
             is UpstreamResult.Failure -> send(
                 exchange,
