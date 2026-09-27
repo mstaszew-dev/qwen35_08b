@@ -87,6 +87,16 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.zcode.qwen35-gw.plis
 service survives re-login. Manual restart: `launchctl kickstart -k gui/$(id -u)/com.zcode.qwen35-gw`.
 Logs go to `logs/gateway.out.log`, `logs/gateway.err.log`, and `logs/llama-server.log`.
 
+2026-09-27 update (this machine): the LaunchAgent was removed from
+`~/Library/LaunchAgents` - the gateway no longer autostarts at login; it is
+started manually. Use the helper that bootstraps/bootouts the plist above:
+
+```bash
+~/bin/qwen35gw start|stop|restart|status
+```
+
+or run `./qwen35-gw` directly from the project directory.
+
 ## Model and license
 
 - The GGUF is `Qwen3.5-0.8B-Q4_K_M.gguf` from the `lmstudio-community/Qwen3.5-0.8B-GGUF`
